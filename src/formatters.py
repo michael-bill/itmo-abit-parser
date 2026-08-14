@@ -35,12 +35,37 @@ def _quota_label(person: Applicant) -> str:
     return "целевая квота" if person.quota == "target" else "общий конкурс"
 
 
-def _status_emoji(person: Applicant) -> str:
-    if person.status == "recommended":
+def _status_emoji(person: Applicant, *, paid: bool = False) -> str:
+    if paid:
+        if person.has_paid_contract:
+            return "🟢"
+        if person.has_approved_contract:
+            return "🟡"
+        return "⚪"
+    if person.status in ("recommended", "in_order") and person.is_send_agreement:
         return "🟢"
-    if person.status == "pass_another":
+    if person.status == "recommended":
         return "🟡"
+    if person.status in ("pass_another", "in_another_order"):
+        return "🔘"
     return "⚪"
+
+
+def _color_label(person: Applicant, *, paid: bool = False) -> str:
+    mark = _status_emoji(person, paid=paid)
+    if paid:
+        if person.has_paid_contract:
+            return f"{mark} договор оплачен"
+        if person.has_approved_contract:
+            return f"{mark} договор есть, оплаты нет"
+        return f"{mark} без договора"
+    if person.status in ("recommended", "in_order") and person.is_send_agreement:
+        return f"{mark} проходите сюда, согласие есть"
+    if person.status == "recommended":
+        return f"{mark} проходите сюда, согласия нет"
+    if person.status in ("pass_another", "in_another_order"):
+        return f"{mark} проходите на другую программу"
+    return f"{mark} без пометки"
 
 
 def _person_line(person: Applicant, *, highlight: bool = False, paid: bool = False) -> str:
@@ -58,7 +83,7 @@ def _person_line(person: Applicant, *, highlight: bool = False, paid: bool = Fal
         agr = "согл." if person.is_send_agreement else "без согл."
     prio = person.priority if person.priority is not None else "—"
     return (
-        f"{mark}{_status_emoji(person)} <b>#{person.position}</b>  №{_esc(person.sspvo_id)}"
+        f"{mark}{_status_emoji(person, paid=paid)} <b>#{person.position}</b>  №{_esc(person.sspvo_id)}"
         f"  пр.{_esc(prio)}  ВИ+ИД {_fmt_score(person.total_scores, 1)}"
         f"  дип.{diploma}  {agr}{you}"
     )
@@ -78,62 +103,61 @@ def _verdict(analysis: Analysis) -> str:
     places = rating.places
     assert me is not None
     hpp_place = analysis.hpp_place or 0
-    seats = "платных" if rating.is_paid else "бюджетных"
 
     if _below_min_exam(me):
         return (
-            "⏳ Пока вы в списке подавших, а не в конкурсном.\n"
-            "В конкурсный список попадут только с ВИ ≥ 50."
+            "Пока вы только в списке подавших документы.\n"
+            "В конкурс попадут те, у кого балл ВИ не меньше 50."
         )
     if rating.is_paid:
         in_places = me.position <= places
         if me.has_paid_contract and in_places:
             return (
-                f"✅ Договор оплачен, и вы в пределах {places} платных мест.\n"
-                "При сохранении оплаты вас зачислят сюда."
+                f"Договор оплачен, и вы в пределах {places} платных мест.\n"
+                "Если оплата сохранится — вас зачислят сюда."
             )
         if me.has_approved_contract and in_places:
             return (
-                f"⚠️ Договор есть, но оплаты ещё нет.\n"
-                f"Место {me.position} из {places} платных — без оплаты не зачислят."
+                f"Договор есть, но ещё не оплачен. Вы в пределах {places} платных мест.\n"
+                "Без оплаты сюда не зачислят."
             )
         if in_places:
             return (
-                f"⚠️ По месту вы в пределах {places} платных, но договора нет.\n"
+                f"По месту вы в пределах {places} платных, но договора нет.\n"
                 "На платное зачисляют только с договором и оплатой."
             )
         if me.has_contract:
             return (
-                f"⚠️ Договор есть, но {me.position}-е место за чертой {places} платных."
+                f"Договор есть, но вы за чертой: {me.position}-е место "
+                f"при {places} платных."
             )
         return (
-            f"ℹ️ {me.position}-е место при {places} платных, договора нет.\n"
+            f"{me.position}-е место при {places} платных, договора нет.\n"
             "На платное зачисляют по договору и оплате."
         )
     if me.highest_passageway_priority and hpp_place <= places:
         return (
-            f"✅ Вас зачислят на эту программу.\n"
-            f"Есть высший проходной приоритет и {hpp_place}-е реальное место "
-            f"при {places} {seats}."
+            f"Вас зачислят на эту программу.\n"
+            f"Согласие уже есть, и вы в пределах мест: {hpp_place}-й "
+            f"из {places} бюджетных."
         )
     if me.highest_passageway_priority and hpp_place > places:
         return (
-            f"⚠️ Высший проходной приоритет здесь, но {hpp_place}-е место "
-            f"пока за чертой {places} {seats}."
+            f"Согласие на эту программу есть, но вы пока за чертой.\n"
+            f"Реальное место {hpp_place} при {places} бюджетных."
         )
     if me.main_top_priority and not me.is_send_agreement:
         return (
-            "⚠️ Сюда вы проходите — это ваш основной высший приоритет.\n"
-            "Без согласия на зачисление место не закрепят: зачисляют только по ВПП."
+            "Сейчас вы проходите на эту программу — это ваш лучший вариант, куда хватает баллов.\n"
+            "Согласия ещё нет. Без него место не закрепят: зачислят только после согласия."
         )
     if me.main_top_priority:
         return (
-            "⚠️ Основной высший приоритет здесь, но высшего проходного нет.\n"
-            "Сейчас зачисление на эту программу не идёт."
+            "Сюда вы проходите, но ИТМО пока не ставит вас в зачисление на эту программу."
         )
     return (
-        "ℹ️ На эту программу вас сейчас не зачислят.\n"
-        "Основной высший приоритет на другой программе — или вы пока не проходите никуда."
+        "Сейчас вас сюда не зачислят.\n"
+        "Либо вы проходите на другую программу выше по приоритету, либо пока никуда не проходите."
     )
 
 
@@ -199,6 +223,7 @@ def format_summary(analysis: Analysis, code: str, program_name: str) -> str:
             if paid
             else f"согласие  ·  {_flag(me.is_send_agreement)}"
         ),
+        f"пометка ИТМО  ·  {_color_label(me, paid=paid)}",
     ]
     if not paid:
         you_block += [
@@ -308,7 +333,7 @@ def format_list(analysis: Analysis, code: str, *, first_priority: bool) -> str:
                 else ("  согл." if person.is_send_agreement else "")
             )
             lines.append(
-                f"{mark} {_status_emoji(person)} <b>#{p1}</b> (общ. {person.position})  "
+                f"{mark} {_status_emoji(person, paid=paid)} <b>#{p1}</b> (общ. {person.position})  "
                 f"№{_esc(person.sspvo_id)}  ВИ+ИД {_fmt_score(person.total_scores, 1)}"
                 f"  дип.{_fmt_diploma(person.diploma_average)}{extra}{you}"
             )
@@ -327,7 +352,11 @@ def format_list(analysis: Analysis, code: str, *, first_priority: bool) -> str:
     )
     lines += [
         "",
-        "🟢 рекомендован сюда  ·  🟡 рекомендован на другую  ·  ⚪ нет пометки",
+        (
+            "🟢 договор оплачен  ·  🟡 договор без оплаты  ·  ⚪ без договора"
+            if paid
+            else "🟢 сюда, согласие есть  ·  🟡 сюда, согласия нет  ·  🔘 другая программа  ·  ⚪ нет пометки"
+        ),
         legend,
     ]
     return "\n".join(lines)
