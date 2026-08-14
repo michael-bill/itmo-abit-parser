@@ -59,7 +59,7 @@ def programs_keyboard(cfg: AppConfig) -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=first.short or first.name,
+                    text=first.menu_text,
                     callback_data=f"f:{first.group_id}",
                 )
             ]
@@ -153,10 +153,9 @@ async def _safe_edit(message: Message, text: str, reply_markup: InlineKeyboardMa
 
 async def show_financing(message: Message, family: tuple[ProgramConfig, ...], code: str) -> None:
     first = family[0]
-    title = first.short or first.name
     await _safe_edit(
         message,
-        f"Код: <code>{code}</code>\n<b>{title}</b>\nВыберите список:",
+        f"Код: <code>{code}</code>\n<b>{first.menu_text}</b>\nВыберите список:",
         financing_keyboard(family),
     )
 

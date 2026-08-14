@@ -63,6 +63,7 @@ python -m src --dump 2053628 2379
 programs:
   - name: "Веб-технологии"
     short: "Веб"
+    code: "09.04.04"
     url: "https://abit.itmo.ru/rating/master/budget/2379"
 ```
 
@@ -73,6 +74,7 @@ programs:
 ```yaml
   - name: "Веб-технологии"
     short: "Веб"
+    code: "09.04.04"
     url: "https://abit.itmo.ru/rating/master/contract/2379"
 ```
 

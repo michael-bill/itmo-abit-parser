@@ -22,6 +22,7 @@ FINANCING_LABELS = {
 class ProgramConfig:
     name: str
     short: str
+    direction_code: str
     url: str
     degree: str
     financing: str
@@ -36,12 +37,9 @@ class ProgramConfig:
         return self.financing != "budget"
 
     @property
-    def button_text(self) -> str:
+    def menu_text(self) -> str:
         base = self.short or self.name
-        label = self.financing_label
-        if label.lower() in base.lower():
-            return base
-        return f"{base} · {label}"
+        return f"{base} · {self.direction_code}"
 
     @property
     def ref(self) -> str:
@@ -105,10 +103,17 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         seen.add(key)
         title = str(item.get("name") or "").strip() or f"Программа {group_id}"
         short = str(item.get("short") or title).strip()
+        direction_code = str(item.get("code") or item.get("direction_code") or "").strip()
+        if not direction_code:
+            raise ValueError(
+                f"У программы {title} ({group_id}) нет кода направления. "
+                "Добавьте code: \"09.04.03\" в config.yaml"
+            )
         programs.append(
             ProgramConfig(
                 name=title,
                 short=short,
+                direction_code=direction_code,
                 url=url,
                 degree=degree,
                 financing=financing,
