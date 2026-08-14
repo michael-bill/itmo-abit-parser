@@ -1,0 +1,5 @@
+aiogram>=3.13,<4
+aiohttp-socks>=0.10
+httpx>=0.27
+PyYAML>=6.0
+python-dotenv>=1.0

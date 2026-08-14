@@ -1,0 +1,10 @@
+# Как часто перезапрашивать списки ИТМО (секунды).
+cache_ttl_seconds: 45
+
+programs:
+  - name: "Веб-технологии"
+    short: "Веб"
+    url: "https://abit.itmo.ru/rating/master/budget/2379"
+  - name: "Системное и прикладное ПО"
+    short: "СиПО"
+    url: "https://abit.itmo.ru/rating/master/budget/2444"
