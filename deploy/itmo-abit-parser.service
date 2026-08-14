@@ -1,0 +1,14 @@
+[Unit]
+Description=ITMO Abit Parser Telegram Bot
+After=network.target
+
+[Service]
+ExecStart=/home/hulumulumulus/itmo-abit-parser/.venv/bin/python -m src
+WorkingDirectory=/home/hulumulumulus/itmo-abit-parser
+Restart=always
+RestartSec=3
+User=hulumulumulus
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

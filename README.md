@@ -27,11 +27,27 @@ TELEGRAM_PROXY=socks5://127.0.0.1:1080
 
 или `http://user:pass@host:8080`.
 
-Запуск:
+Запуск вручную:
 
 ```bash
 python -m src
 ```
+
+Чтобы бот жил постоянно и поднимался после перезагрузки (как onotole), поставь systemd-сервис:
+
+```bash
+sudo cp deploy/itmo-abit-parser.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now itmo-abit-parser
+```
+
+После правок кода или `config.yaml`:
+
+```bash
+sudo systemctl restart itmo-abit-parser
+```
+
+Логи: `journalctl -u itmo-abit-parser -f`
 
 Проверка парсера без Telegram (код `2053628`, программа `2379`):
 
