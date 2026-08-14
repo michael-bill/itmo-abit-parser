@@ -3,20 +3,12 @@ from __future__ import annotations
 import html
 from datetime import datetime
 
+from .config import FINANCING_LABELS
 from .models import Analysis, Applicant
-
-STATUS_LABELS = {
-    "recommended": "предварительно рекомендован на эту программу",
-    "pass_another": "предварительно рекомендован на другую программу",
-}
 
 
 def _esc(value: object) -> str:
     return html.escape(str(value), quote=False)
-
-
-def _yes_no(flag: bool) -> str:
-    return "да" if flag else "нет"
 
 
 def _fmt_score(value: float | None, digits: int = 1) -> str:
@@ -51,11 +43,19 @@ def _status_emoji(person: Applicant) -> str:
     return "⚪"
 
 
-def _person_line(person: Applicant, *, highlight: bool = False) -> str:
+def _person_line(person: Applicant, *, highlight: bool = False, paid: bool = False) -> str:
     mark = "➤ " if highlight else "    "
     you = "  ← вы" if highlight else ""
     diploma = _fmt_diploma(person.diploma_average)
-    agr = "согл." if person.is_send_agreement else "без согл."
+    if paid:
+        if person.has_paid_contract:
+            agr = "оплачен"
+        elif person.has_approved_contract:
+            agr = "дог."
+        else:
+            agr = "без дог."
+    else:
+        agr = "согл." if person.is_send_agreement else "без согл."
     prio = person.priority if person.priority is not None else "—"
     return (
         f"{mark}{_status_emoji(person)} <b>#{person.position}</b>  №{_esc(person.sspvo_id)}"
@@ -64,137 +64,211 @@ def _person_line(person: Applicant, *, highlight: bool = False) -> str:
     )
 
 
+def _flag(value: bool) -> str:
+    return "✅ да" if value else "❌ нет"
+
+
+def _below_min_exam(person: Applicant) -> bool:
+    return person.exam_scores < 50 and person.total_scores < 50
+
+
+def _verdict(analysis: Analysis) -> str:
+    me = analysis.me
+    rating = analysis.rating
+    places = rating.places
+    assert me is not None
+    hpp_place = analysis.hpp_place or 0
+    seats = "платных" if rating.is_paid else "бюджетных"
+
+    if _below_min_exam(me):
+        return (
+            "⏳ Пока вы в списке подавших, а не в конкурсном.\n"
+            "В конкурсный список попадут только с ВИ ≥ 50."
+        )
+    if rating.is_paid:
+        in_places = me.position <= places
+        if me.has_paid_contract and in_places:
+            return (
+                f"✅ Договор оплачен, и вы в пределах {places} платных мест.\n"
+                "При сохранении оплаты вас зачислят сюда."
+            )
+        if me.has_approved_contract and in_places:
+            return (
+                f"⚠️ Договор есть, но оплаты ещё нет.\n"
+                f"Место {me.position} из {places} платных — без оплаты не зачислят."
+            )
+        if in_places:
+            return (
+                f"⚠️ По месту вы в пределах {places} платных, но договора нет.\n"
+                "На платное зачисляют только с договором и оплатой."
+            )
+        if me.has_contract:
+            return (
+                f"⚠️ Договор есть, но {me.position}-е место за чертой {places} платных."
+            )
+        return (
+            f"ℹ️ {me.position}-е место при {places} платных, договора нет.\n"
+            "На платное зачисляют по договору и оплате."
+        )
+    if me.highest_passageway_priority and hpp_place <= places:
+        return (
+            f"✅ Вас зачислят на эту программу.\n"
+            f"Есть высший проходной приоритет и {hpp_place}-е реальное место "
+            f"при {places} {seats}."
+        )
+    if me.highest_passageway_priority and hpp_place > places:
+        return (
+            f"⚠️ Высший проходной приоритет здесь, но {hpp_place}-е место "
+            f"пока за чертой {places} {seats}."
+        )
+    if me.main_top_priority and not me.is_send_agreement:
+        return (
+            "⚠️ Сюда вы проходите — это ваш основной высший приоритет.\n"
+            "Без согласия на зачисление место не закрепят: зачисляют только по ВПП."
+        )
+    if me.main_top_priority:
+        return (
+            "⚠️ Основной высший приоритет здесь, но высшего проходного нет.\n"
+            "Сейчас зачисление на эту программу не идёт."
+        )
+    return (
+        "ℹ️ На эту программу вас сейчас не зачислят.\n"
+        "Основной высший приоритет на другой программе — или вы пока не проходите никуда."
+    )
+
+
 def format_summary(analysis: Analysis, code: str, program_name: str) -> str:
     rating = analysis.rating
-    places = rating.budget_places
+    places = rating.places
     target = rating.target_places
-    lines = [
+    paid = rating.is_paid
+    me = analysis.me
+    kind = FINANCING_LABELS.get(rating.financing, rating.financing)
+    places_label = f"{places} платных мест" if paid else f"{places} бюджетных мест"
+
+    header = [
         f"🎓 <b>{_esc(rating.title or program_name)}</b>",
-        f"Мест: <b>{places}</b>" + (f"  (ЦК: {target})" if target else "  (ЦК: 0)"),
-        f"Обновлено: {_esc(_fmt_time(rating.update_time))}",
-        f'<a href="{_esc(rating.source_url)}">Открыть список на сайте ИТМО</a>',
         "",
-        f"👤 Код: <code>{_esc(code)}</code>",
+        f"🏛 {kind}  ·  {places_label}" + (f"  ·  {target} целевых" if target and not paid else ""),
+        f"🕐 список ИТМО от {_esc(_fmt_time(rating.update_time))}",
+        f"🔄 проверено {_esc(_fmt_time(rating.fetched_at))}",
+        f'<a href="{_esc(rating.source_url)}">открыть список на сайте</a>',
+        "",
+        f"🔢 код  <code>{_esc(code)}</code>",
     ]
 
-    me = analysis.me
     if me is None:
-        lines += [
-            "",
-            "❌ Код не найден в этом конкурсном списке.",
-            "Проверьте код или выберите другую программу.",
-        ]
-        return "\n".join(lines)
+        return "\n".join(header + ["", "❌ Этот код в списке не найден."])
 
-    lines += [
+    prio = me.priority if me.priority is not None else "—"
+    places_block = [
         "",
-        f"📋 Место в общем списке: <b>{me.position}</b> из {analysis.overall_total}",
+        "📊 <b>Места</b>",
+        f"в общем списке  ·  <b>{me.position}</b> из {analysis.overall_total}",
     ]
     if me.priority == 1 and analysis.prio1_position is not None:
-        lines.append(
-            f"⭐ Среди 1 приоритета: <b>{analysis.prio1_position}</b> из {len(analysis.prio1)}"
+        places_block.append(
+            f"среди 1 приоритета  ·  <b>{analysis.prio1_position}</b> из {len(analysis.prio1)}"
         )
     else:
-        prio = me.priority if me.priority is not None else "—"
-        lines.append(
-            f"⭐ 1 приоритет: эта программа у вас {prio}-я "
-            f"(в 1 приоритете здесь {len(analysis.prio1)} чел.)"
+        places_block.append(
+            f"ваш приоритет  ·  <b>{_esc(prio)}</b>    среди 1 приоритета здесь {len(analysis.prio1)}"
+        )
+    if not paid and analysis.hpp_place is not None:
+        places_block.append(
+            f"реальное по ВПП  ·  <b>{analysis.hpp_place}</b> из {places}"
+        )
+    elif paid and analysis.agreement_place is not None:
+        places_block.append(
+            f"среди договоров  ·  <b>{analysis.agreement_place}</b>"
         )
 
-    lines += [
+    you_block = [
         "",
-        f"Конкурс: {_esc(_quota_label(me))}",
-        f"Приоритет: <b>{_esc(me.priority if me.priority is not None else '—')}</b>",
-        f"Вид испытания: {_esc(me.exam_label)}",
+        "👤 <b>Вы</b>",
         (
-            f"Баллы: ВИ {_fmt_score(me.exam_scores, 1)} + ИД {_fmt_score(me.ia_scores, 1)}"
+            f"баллы  ·  ВИ {_fmt_score(me.exam_scores, 1)} + ИД {_fmt_score(me.ia_scores, 1)}"
             f" = <b>{_fmt_score(me.total_scores, 1)}</b>"
         ),
-        f"Средний балл диплома: <b>{_fmt_diploma(me.diploma_average)}</b>",
-        f"Согласие на зачисление: {_yes_no(me.is_send_agreement)}",
-        f"Основной высший приоритет: {_yes_no(me.main_top_priority)}",
-        f"Высший проходной приоритет: {_yes_no(me.highest_passageway_priority)}",
+        f"диплом  ·  {_fmt_diploma(me.diploma_average)}",
+        f"испытание  ·  {_esc(me.exam_label)}",
+        f"конкурс  ·  {_esc(_quota_label(me))}",
+        (
+            f"договор  ·  {_flag(me.has_approved_contract)}"
+            f"    оплата  ·  {_flag(me.has_paid_contract)}"
+            if paid
+            else f"согласие  ·  {_flag(me.is_send_agreement)}"
+        ),
+    ]
+    if not paid:
+        you_block += [
+            f"ОВП  ·  {_flag(me.main_top_priority)}",
+            f"ВПП  ·  {_flag(me.highest_passageway_priority)}",
+        ]
+    you_block += [
+        "",
+        f"<blockquote>{_esc(_verdict(analysis))}</blockquote>",
     ]
 
-    if me.status:
-        lines.append(f"Пометка сайта: {_esc(STATUS_LABELS.get(me.status, me.status))}")
-    else:
-        lines.append("Пометка сайта: нет (не в зоне рекомендации)")
-
-    if not me.has_exam_score:
-        lines += [
-            "",
-            "⚠️ Баллы ВИ пока 0. В списке вы стоите среди тех, у кого тоже нет баллов, "
-            "и ранжируетесь по среднему баллу диплома. После публикации результатов "
-            "место может сильно измениться.",
-        ]
-
-    if analysis.ahead:
+    contest_block: list[str] = []
+    if analysis.ahead and analysis.agreement_place is not None:
         ahead = analysis.ahead
-        lines += [
+        contest_block = [
             "",
-            "<b>Кто впереди в общем списке</b>",
-            f"• всего: {ahead.total}",
-            f"• с ненулевыми баллами ВИ+ИД: {ahead.with_scores}",
-            f"• с 1 приоритетом: {ahead.first_priority}",
-            f"• с согласием: {ahead.with_agreement}",
-            f"• рекомендованы сюда: {ahead.recommended}",
+            "👥 <b>Кто впереди</b>",
+            f"всего  ·  {ahead.total}",
+            (
+                f"{'с договором' if paid else 'с согласием'}  ·  {ahead.with_agreement}"
+                f"  →  вы <b>{analysis.agreement_place}</b>-й среди них"
+            ),
         ]
+        if not paid:
+            contest_block.append(
+                f"с ВПП  ·  {analysis.hpp_ahead}"
+                f"  →  реальное <b>{analysis.hpp_place}</b>-е из {places}"
+            )
+        contest_block += [
+            "",
+            "📌 <b>На программе сейчас</b>",
+        ]
+        if paid:
+            contest_block.append(
+                f"с договором  ·  <b>{ahead.with_agreement + int(me.has_contract)}</b> из {places}"
+            )
+        else:
+            contest_block.append(
+                f"с ВПП, займут место  ·  <b>{analysis.hpp_total}</b> из {places}"
+            )
+        if analysis.mtp_without_consent and not paid:
+            contest_block.append(
+                f"ОВП без согласия  ·  {analysis.mtp_without_consent}  — их места могут освободиться"
+            )
 
-    prio1_scored = sum(1 for person in analysis.prio1 if person.has_exam_score)
-    lines += [
-        "",
-        "<b>Конкурс среди 1 приоритета</b>",
-        f"• заявлений с 1 приоритетом: {len(analysis.prio1)}",
-        f"• из них с баллами ВИ+ИД: {prio1_scored}",
-        f"• бюджетных мест: {places}",
-    ]
-    if analysis.ahead_prio1 is not None:
-        lines.append(
-            f"• впереди вас среди 1 приоритета: {analysis.ahead_prio1.total}"
-            f" (с баллами: {analysis.ahead_prio1.with_scores})"
-        )
-    if prio1_scored < places:
-        lines.append(
-            f"• сейчас людей с 1 приоритетом и баллами меньше числа мест "
-            f"({prio1_scored} &lt; {places}) — много заявлений ещё без ВИ."
-        )
-    elif analysis.prio1:
-        cutoff_idx = min(places, len(analysis.prio1)) - 1
-        cutoff = analysis.prio1[cutoff_idx]
-        lines.append(
-            f"• {places}-й в списке 1 приоритета: место #{cutoff.position}, "
-            f"ВИ+ИД {_fmt_score(cutoff.total_scores, 1)}, дип.{_fmt_diploma(cutoff.diploma_average)}"
-        )
-
-    rec = analysis.recommended
-    lines += [
-        "",
-        "<b>Как это видит сайт</b>",
-        f"• предварительно рекомендованы сюда: {len(rec)} (обычно = числу мест)",
-        f"• высший проходной приоритет: "
-        f"{sum(1 for person in rating.all_applicants if person.highest_passageway_priority)}",
-    ]
-    if rec:
-        last = rec[-1]
-        lines.append(
-            f"• последний из рекомендованных: место #{last.position}, "
-            f"ВИ+ИД {_fmt_score(last.total_scores, 1)}, дип.{_fmt_diploma(last.diploma_average)}"
-        )
-    lines.append(
-        "\n<i>Рекомендация и «проходной приоритет» — пометки суперсервиса, "
-        "а не наш пересчёт. Итог зависит от согласий и других программ.</i>"
-    )
-    return "\n".join(lines)
+    if paid:
+        footer = [
+            "",
+            "<i>На платное зачисляют по договору и оплате, не по согласию.</i>",
+            "<i>Места смотрите относительно числа платных мест на программе.</i>",
+        ]
+    else:
+        footer = [
+            "",
+            "<i>ОВП — основной высший приоритет: сюда проходите, даже если согласия ещё нет.</i>",
+            "<i>ВПП — высший проходной приоритет: по нему зачисляют, нужно согласие.</i>",
+            "<i>Согласие одно на весь ИТМО. Основной этап — до 24.08, 12:00 МСК.</i>",
+        ]
+    return "\n".join(header + places_block + you_block + contest_block + footer)
 
 
 def format_list(analysis: Analysis, code: str, *, first_priority: bool) -> str:
     rating = analysis.rating
     me = analysis.me
+    paid = rating.is_paid
     title = "Среди 1 приоритета" if first_priority else "Общий список"
     lines = [
         f"🎓 <b>{_esc(rating.title)}</b>",
-        f"<b>{title}</b> · код <code>{_esc(code)}</code>",
+        f"📋 {title}  ·  {FINANCING_LABELS.get(rating.financing, rating.financing)}"
+        f"  ·  код <code>{_esc(code)}</code>",
         "",
     ]
 
@@ -222,22 +296,39 @@ def format_list(analysis: Analysis, code: str, *, first_priority: bool) -> str:
             highlight = person.sspvo_id == me.sspvo_id
             mark = "➤" if highlight else " "
             you = "  ← вы" if highlight else ""
+            extra = (
+                (
+                    "  оплачен"
+                    if person.has_paid_contract
+                    else "  дог."
+                    if person.has_approved_contract
+                    else ""
+                )
+                if paid
+                else ("  согл." if person.is_send_agreement else "")
+            )
             lines.append(
                 f"{mark} {_status_emoji(person)} <b>#{p1}</b> (общ. {person.position})  "
                 f"№{_esc(person.sspvo_id)}  ВИ+ИД {_fmt_score(person.total_scores, 1)}"
-                f"  дип.{_fmt_diploma(person.diploma_average)}"
-                f"{'  согл.' if person.is_send_agreement else ''}{you}"
+                f"  дип.{_fmt_diploma(person.diploma_average)}{extra}{you}"
             )
     else:
-        lines.append(f"Ваше место: <b>#{me.position}</b> из {analysis.overall_total}")
+        lines.append(f"📍 Ваше место: <b>#{me.position}</b> из {analysis.overall_total}")
         lines.append("")
         for person in analysis.neighbors:
-            lines.append(_person_line(person, highlight=person.sspvo_id == me.sspvo_id))
+            lines.append(
+                _person_line(person, highlight=person.sspvo_id == me.sspvo_id, paid=paid)
+            )
 
+    legend = (
+        "пр. — приоритет, дог. — договор, оплачен — договор оплачен"
+        if paid
+        else "пр. — приоритет, согл. — согласие на зачисление"
+    )
     lines += [
         "",
         "🟢 рекомендован сюда  ·  🟡 рекомендован на другую  ·  ⚪ нет пометки",
-        "пр. — приоритет, согл. — согласие на зачисление",
+        legend,
     ]
     return "\n".join(lines)
 
@@ -245,18 +336,18 @@ def format_list(analysis: Analysis, code: str, *, first_priority: bool) -> str:
 def format_help() -> str:
     return "\n".join(
         [
-            "<b>Как пользоваться</b>",
-            "1. Сохраните уникальный код поступающего (Госуслуги / суперсервис).",
-            "2. Выберите программу — бот подтянет официальный список ИТМО.",
-            "3. Смотрите сводку, себя в общем списке и среди тех, у кого эта программа — 1 приоритет.",
+            "👋 <b>Как пользоваться</b>",
+            "Сохраните код поступающего, выберите программу, смотрите сводку и себя в списках.",
             "",
-            "<b>Что значит сводка</b>",
-            "• <b>ВИ</b> — вступительное испытание, <b>ИД</b> — индивидуальные достижения.",
-            "• Список отсортирован по ВИ+ИД, при равенстве — по среднему баллу диплома.",
-            "• <b>1 приоритет</b> — отфильтрованный тот же список, только priority = 1.",
-            "• <b>Основной высший приоритет</b> — для поступающего это сейчас главная программа.",
-            "• <b>Высший проходной приоритет</b> — он проходит именно сюда с учётом других заявлений.",
-            "• <b>Рекомендован</b> — пометка сайта, обычно совпадает с числом бюджетных мест.",
+            "<b>Как ранжируют</b> (правила ИТМО, п. 51)",
+            "ВИ+ИД → балл ВИ → тип испытания (ЯП / мегаконкурс / портфолио / ВЭ) → ИД → средний балл диплома.",
+            "В конкурсный список попадают с ВИ ≥ 50.",
+            "",
+            "<b>ОВП</b> — основной высший приоритет: самая высокая программа, куда вы сейчас проходите, даже без согласия.",
+            "<b>ВПП</b> — высший проходной приоритет: то же, но только при согласии. По ВПП зачисляют.",
+            "Согласие одно на весь ИТМО. Основной этап: до 24.08 12:00 МСК, приказы 25.08.",
+            "",
+            "На <b>платное</b> зачисляют по договору и оплате, не по согласию.",
             "",
             "Команды: /start · /code · /programs · /help",
         ]

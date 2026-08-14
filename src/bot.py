@@ -53,25 +53,52 @@ def main_keyboard() -> ReplyKeyboardMarkup:
 
 
 def programs_keyboard(cfg: AppConfig) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text=program.button_text, callback_data=f"p:{program.group_id}")]
-        for program in cfg.programs
-    ]
+    rows = []
+    for family in cfg.families():
+        first = family[0]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=first.short or first.name,
+                    callback_data=f"f:{first.group_id}",
+                )
+            ]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def program_actions(group_id: int) -> InlineKeyboardMarkup:
+def financing_keyboard(family: tuple[ProgramConfig, ...]) -> InlineKeyboardMarkup:
+    choices = [
+        InlineKeyboardButton(
+            text=program.financing_label.capitalize(),
+            callback_data=f"p:{program.ref}",
+        )
+        for program in family
+    ]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            choices,
+            [InlineKeyboardButton(text="« К программам", callback_data="programs")],
+        ]
+    )
+
+
+def program_actions(program: ProgramConfig, cfg: AppConfig) -> InlineKeyboardMarkup:
+    ref = program.ref
+    family = cfg.family_by_group_id(program.group_id)
+    back_data = f"f:{program.group_id}" if len(family) > 1 else "programs"
+    back_text = "« К выбору списка" if len(family) > 1 else "« К программам"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="📋 Я в общем списке", callback_data=f"l:{group_id}:all"),
-                InlineKeyboardButton(text="⭐ Среди 1 приоритета", callback_data=f"l:{group_id}:p1"),
+                InlineKeyboardButton(text="📋 Я в общем списке", callback_data=f"l:{ref}:all"),
+                InlineKeyboardButton(text="⭐ Среди 1 приоритета", callback_data=f"l:{ref}:p1"),
             ],
             [
-                InlineKeyboardButton(text="📊 Сводка", callback_data=f"p:{group_id}"),
-                InlineKeyboardButton(text="🔄 Обновить", callback_data=f"r:{group_id}"),
+                InlineKeyboardButton(text="📊 Сводка", callback_data=f"p:{ref}"),
+                InlineKeyboardButton(text="🔄 Обновить", callback_data=f"r:{ref}"),
             ],
-            [InlineKeyboardButton(text="« К программам", callback_data="programs")],
+            [InlineKeyboardButton(text=back_text, callback_data=back_data)],
         ]
     )
 
@@ -124,12 +151,23 @@ async def _safe_edit(message: Message, text: str, reply_markup: InlineKeyboardMa
             raise
 
 
+async def show_financing(message: Message, family: tuple[ProgramConfig, ...], code: str) -> None:
+    first = family[0]
+    title = first.short or first.name
+    await _safe_edit(
+        message,
+        f"Код: <code>{code}</code>\n<b>{title}</b>\nВыберите список:",
+        financing_keyboard(family),
+    )
+
+
 async def render_program(
     *,
     message: Message,
     program: ProgramConfig,
     code: str,
     client: RatingClient,
+    cfg: AppConfig,
     view: str,
     force: bool = False,
 ) -> None:
@@ -137,11 +175,11 @@ async def render_program(
     try:
         rating = await client.fetch(program, force=force)
     except Exception:
-        log.exception("Ошибка загрузки списка %s", program.group_id)
+        log.exception("Ошибка загрузки списка %s", program.ref)
         await _safe_edit(
             message,
             "Не удалось загрузить список ИТМО. Попробуйте обновить через минуту.",
-            program_actions(program.group_id),
+            program_actions(program, cfg),
         )
         return
 
@@ -152,7 +190,7 @@ async def render_program(
         text = format_list(analysis, code, first_priority=True)
     else:
         text = format_summary(analysis, code, program.name)
-    await _safe_edit(message, text, program_actions(program.group_id))
+    await _safe_edit(message, text, program_actions(program, cfg))
 
 
 @router.message(CommandStart())
@@ -239,6 +277,34 @@ async def cb_programs(callback: CallbackQuery, db: Database, cfg: AppConfig) -> 
         )
 
 
+@router.callback_query(F.data.regexp(r"^f:\d+$"))
+async def cb_family(callback: CallbackQuery, db: Database, cfg: AppConfig, client: RatingClient) -> None:
+    code = db.get_code(callback.from_user.id)
+    if not code:
+        await callback.answer("Сначала сохраните код", show_alert=True)
+        return
+    if not callback.data or not callback.message:
+        await callback.answer()
+        return
+    group_id = int(callback.data.split(":")[1])
+    family = cfg.family_by_group_id(group_id)
+    if not family:
+        await callback.answer("Программы больше нет в конфиге", show_alert=True)
+        return
+    await callback.answer()
+    if len(family) == 1:
+        await render_program(
+            message=callback.message,
+            program=family[0],
+            code=code,
+            client=client,
+            cfg=cfg,
+            view="summary",
+        )
+        return
+    await show_financing(callback.message, family, code)
+
+
 @router.callback_query(F.data.regexp(r"^[prl]:"))
 async def cb_program(callback: CallbackQuery, db: Database, cfg: AppConfig, client: RatingClient) -> None:
     code = db.get_code(callback.from_user.id)
@@ -251,8 +317,16 @@ async def cb_program(callback: CallbackQuery, db: Database, cfg: AppConfig, clie
 
     parts = callback.data.split(":")
     action = parts[0]
-    group_id = int(parts[1])
-    program = cfg.program_by_id(group_id)
+    if len(parts) < 3:
+        await callback.answer("Выберите программу заново", show_alert=True)
+        return
+    financing = parts[1]
+    try:
+        group_id = int(parts[2])
+    except ValueError:
+        await callback.answer("Выберите программу заново", show_alert=True)
+        return
+    program = cfg.program_by_ref(financing, group_id)
     if program is None:
         await callback.answer("Программы больше нет в конфиге", show_alert=True)
         return
@@ -260,7 +334,7 @@ async def cb_program(callback: CallbackQuery, db: Database, cfg: AppConfig, clie
     view = "summary"
     force = action == "r"
     if action == "l":
-        view = parts[2] if len(parts) > 2 else "all"
+        view = parts[3] if len(parts) > 3 else "all"
 
     await callback.answer("Обновляю…" if force else "")
     await render_program(
@@ -268,6 +342,7 @@ async def cb_program(callback: CallbackQuery, db: Database, cfg: AppConfig, clie
         program=program,
         code=code,
         client=client,
+        cfg=cfg,
         view=view,
         force=force,
     )

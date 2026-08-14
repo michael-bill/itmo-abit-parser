@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -20,6 +21,8 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
 BUILD_ID_RE = re.compile(r"/_next/static/([A-Za-z0-9_-]+)/_buildManifest\.js")
+MSK = timezone(timedelta(hours=3))
+NO_CACHE_HEADERS = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
 
 
 def _to_float(value: Any) -> float:
@@ -72,6 +75,8 @@ def _parse_applicant(raw: dict[str, Any], quota: str) -> Applicant:
         total_scores=_to_float(raw.get("total_scores")),
         diploma_average=_to_float_or_none(raw.get("diploma_average")),
         is_send_agreement=bool(raw.get("is_send_agreement")),
+        has_approved_contract=bool(raw.get("has_approved_contract")),
+        has_paid_contract=bool(raw.get("has_paid_contract")),
         status=(str(raw["status"]) if raw.get("status") else None),
         main_top_priority=bool(raw.get("main_top_priority")),
         highest_passageway_priority=bool(raw.get("highest_passageway_priority")),
@@ -79,11 +84,12 @@ def _parse_applicant(raw: dict[str, Any], quota: str) -> Applicant:
     )
 
 
-def parse_program_list(payload: dict[str, Any], source_url: str) -> ProgramRating:
+def parse_program_list(payload: dict[str, Any], source_url: str, financing: str) -> ProgramRating:
     direction = payload.get("direction") or {}
+    raw_list = payload.get("general_competition") or payload.get("items") or []
     general = tuple(
         _parse_applicant(item, "general")
-        for item in (payload.get("general_competition") or [])
+        for item in raw_list
         if isinstance(item, dict)
     )
     target = tuple(
@@ -94,9 +100,12 @@ def parse_program_list(payload: dict[str, Any], source_url: str) -> ProgramRatin
     return ProgramRating(
         title=str(direction.get("direction_title") or "Программа").strip(),
         competitive_group_id=int(direction.get("competitive_group_id") or 0),
+        financing=financing,
         budget_places=int(direction.get("budget_min") or 0),
+        contract_places=int(direction.get("contract") or 0),
         target_places=int(direction.get("target_reception") or 0),
         update_time=_parse_update_time(payload.get("update_time")),
+        fetched_at=datetime.now(MSK),
         general=general,
         target_quota=target,
         source_url=source_url,
@@ -108,7 +117,7 @@ class RatingClient:
 
     def __init__(self, cache_ttl_seconds: int = 45) -> None:
         self.cache_ttl_seconds = cache_ttl_seconds
-        self._cache: dict[int, tuple[float, ProgramRating]] = {}
+        self._cache: dict[tuple[str, int], tuple[float, ProgramRating]] = {}
         self._build_id: str | None = None
         self._build_id_at: float = 0.0
         self._client = httpx.AsyncClient(
@@ -123,20 +132,24 @@ class RatingClient:
     def invalidate(self, group_id: int | None = None) -> None:
         if group_id is None:
             self._cache.clear()
-        else:
-            self._cache.pop(group_id, None)
+            return
+        for key in [key for key in self._cache if key[1] == group_id]:
+            self._cache.pop(key, None)
 
     async def fetch(self, program: ProgramConfig, *, force: bool = False) -> ProgramRating:
+        cache_key = (program.financing, program.group_id)
         if not force:
-            cached = self._cache.get(program.group_id)
+            cached = self._cache.get(cache_key)
             if cached and time.monotonic() - cached[0] < self.cache_ttl_seconds:
                 return cached[1]
 
         errors: list[str] = []
-        for loader in (self._load_next_data, self._load_abitlk):
+        loaders = (self._load_abitlk, self._load_next_data) if force else (self._load_next_data, self._load_abitlk)
+        for loader in loaders:
             try:
-                rating = await loader(program)
-                self._cache[program.group_id] = (time.monotonic(), rating)
+                rating = await loader(program, bust_cache=force)
+                rating = replace(rating, fetched_at=datetime.now(MSK))
+                self._cache[cache_key] = (time.monotonic(), rating)
                 return rating
             except Exception as exc:  # noqa: BLE001 — хотим попробовать второй источник
                 log.warning("Не удалось загрузить %s через %s: %s", program.group_id, loader.__name__, exc)
@@ -144,13 +157,15 @@ class RatingClient:
 
         raise RuntimeError("Не удалось загрузить конкурсный список:\n" + "\n".join(errors))
 
-    async def _load_next_data(self, program: ProgramConfig) -> ProgramRating:
+    async def _load_next_data(self, program: ProgramConfig, *, bust_cache: bool = False) -> ProgramRating:
         build_id = await self._get_build_id()
         url = (
             f"{ABIT_ORIGIN}/_next/data/{build_id}/rating/"
             f"{program.degree}/{program.financing}/{program.group_id}.json"
         )
-        response = await self._client.get(url)
+        params = {"_ts": str(int(time.time()))} if bust_cache else None
+        headers = NO_CACHE_HEADERS if bust_cache else None
+        response = await self._client.get(url, params=params, headers=headers)
         if response.status_code == 404:
             self._build_id = None
             build_id = await self._get_build_id(force=True)
@@ -158,20 +173,21 @@ class RatingClient:
                 f"{ABIT_ORIGIN}/_next/data/{build_id}/rating/"
                 f"{program.degree}/{program.financing}/{program.group_id}.json"
             )
-            response = await self._client.get(url)
+            response = await self._client.get(url, params=params, headers=headers)
         response.raise_for_status()
         data = response.json()
         payload = (data.get("pageProps") or {}).get("programList")
         if not isinstance(payload, dict):
             raise ValueError("В ответе Next.js нет programList")
-        return parse_program_list(payload, program.url)
+        return parse_program_list(payload, program.url, program.financing)
 
-    async def _load_abitlk(self, program: ProgramConfig) -> ProgramRating:
-        url = (
-            f"{ABITLK_ORIGIN}/api/v1/rating/{program.degree}/{program.financing}"
-            f"?competitive_group_id={program.group_id}"
-        )
-        response = await self._client.get(url)
+    async def _load_abitlk(self, program: ProgramConfig, *, bust_cache: bool = False) -> ProgramRating:
+        url = f"{ABITLK_ORIGIN}/api/v1/rating/{program.degree}/{program.financing}"
+        params: dict[str, str] = {"competitive_group_id": str(program.group_id)}
+        if bust_cache:
+            params["_ts"] = str(int(time.time()))
+        headers = NO_CACHE_HEADERS if bust_cache else None
+        response = await self._client.get(url, params=params, headers=headers)
         response.raise_for_status()
         data = response.json()
         if not data.get("ok"):
@@ -179,7 +195,7 @@ class RatingClient:
         payload = data.get("result")
         if not isinstance(payload, dict):
             raise ValueError("В ответе API нет result")
-        return parse_program_list(payload, program.url)
+        return parse_program_list(payload, program.url, program.financing)
 
     async def _get_build_id(self, *, force: bool = False) -> str:
         if not force and self._build_id and time.monotonic() - self._build_id_at < 3600:
