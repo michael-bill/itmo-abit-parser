@@ -57,7 +57,9 @@ python -m src --dump 2053628 2379
 
 ## Как добавить программу
 
-В `config.yaml`:
+Если в `config.yaml` стоит `load_all_programs: true`, бот при старте подтягивает все программы магистратуры с [abit.itmo.ru/ratings/master](https://abit.itmo.ru/ratings/master). Записи в `programs:` остаются избранным вверху списка. Остальные ищутся по названию или коду направления.
+
+Чтобы закрепить программу вручную:
 
 ```yaml
 programs:

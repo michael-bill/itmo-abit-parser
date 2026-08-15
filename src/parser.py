@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from .catalog import catalog_from_items
 from .config import ProgramConfig
 from .models import Applicant, ProgramRating
 
@@ -196,6 +197,20 @@ class RatingClient:
         if not isinstance(payload, dict):
             raise ValueError("В ответе API нет result")
         return parse_program_list(payload, program.url, program.financing)
+
+    async def fetch_catalog(self) -> tuple[ProgramConfig, ...]:
+        response = await self._client.get(
+            f"{ABITLK_ORIGIN}/api/v1/rating/directions",
+            params={"degree": "master"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            raise ValueError(data.get("message") or "API каталога вернул ok=false")
+        items = (data.get("result") or {}).get("items") or []
+        if not isinstance(items, list) or not items:
+            raise ValueError("В каталоге программ пустой список")
+        return catalog_from_items(items)
 
     async def _get_build_id(self, *, force: bool = False) -> str:
         if not force and self._build_id and time.monotonic() - self._build_id_at < 3600:

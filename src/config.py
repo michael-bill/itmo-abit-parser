@@ -50,6 +50,8 @@ class ProgramConfig:
 class AppConfig:
     cache_ttl_seconds: int
     programs: tuple[ProgramConfig, ...]
+    load_all_programs: bool = False
+    pinned_group_ids: tuple[int, ...] = ()
 
     def program_by_ref(self, financing: str, group_id: int) -> ProgramConfig | None:
         for program in self.programs:
@@ -58,20 +60,35 @@ class AppConfig:
         return None
 
     def family_by_group_id(self, group_id: int) -> tuple[ProgramConfig, ...]:
-        seed = next((program for program in self.programs if program.group_id == group_id), None)
-        if seed is None:
-            return ()
-        return tuple(program for program in self.programs if program.name == seed.name)
+        return tuple(program for program in self.programs if program.group_id == group_id)
 
     def families(self) -> tuple[tuple[ProgramConfig, ...], ...]:
-        seen: set[str] = set()
+        seen: set[int] = set()
         result: list[tuple[ProgramConfig, ...]] = []
         for program in self.programs:
-            if program.name in seen:
+            if program.group_id in seen:
                 continue
-            seen.add(program.name)
+            seen.add(program.group_id)
             result.append(self.family_by_group_id(program.group_id))
         return tuple(result)
+
+    def pinned_families(self) -> tuple[tuple[ProgramConfig, ...], ...]:
+        if not self.pinned_group_ids:
+            return self.families()
+        result = []
+        for group_id in self.pinned_group_ids:
+            family = self.family_by_group_id(group_id)
+            if family:
+                result.append(family)
+        return tuple(result)
+
+    def with_programs(self, programs: tuple[ProgramConfig, ...]) -> AppConfig:
+        return AppConfig(
+            cache_ttl_seconds=self.cache_ttl_seconds,
+            programs=programs,
+            load_all_programs=self.load_all_programs,
+            pinned_group_ids=self.pinned_group_ids,
+        )
 
 
 def _parse_rating_url(url: str) -> tuple[str, str, int]:
@@ -120,9 +137,18 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
                 group_id=group_id,
             )
         )
-    if not programs:
+    load_all = bool(raw.get("load_all_programs"))
+    if not programs and not load_all:
         raise ValueError("В config.yaml нет ни одной программы")
+    pinned_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for program in programs:
+        if program.group_id not in seen_ids:
+            seen_ids.add(program.group_id)
+            pinned_ids.append(program.group_id)
     return AppConfig(
         cache_ttl_seconds=int(raw.get("cache_ttl_seconds") or 45),
         programs=tuple(programs),
+        load_all_programs=load_all,
+        pinned_group_ids=tuple(pinned_ids),
     )
