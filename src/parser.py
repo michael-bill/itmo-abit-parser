@@ -122,7 +122,7 @@ class RatingClient:
         self._build_id_at: float = 0.0
         self._client = httpx.AsyncClient(
             headers={"User-Agent": USER_AGENT, "Accept": "application/json,text/html"},
-            timeout=httpx.Timeout(40.0, connect=10.0),
+            timeout=httpx.Timeout(5.0, connect=3.0),
             follow_redirects=True,
         )
 
