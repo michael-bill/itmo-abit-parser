@@ -103,6 +103,7 @@ def _verdict(analysis: Analysis) -> str:
     places = rating.places
     assert me is not None
     hpp_place = analysis.hpp_place or 0
+    status = me.status
 
     if _below_min_exam(me):
         return (
@@ -135,29 +136,70 @@ def _verdict(analysis: Analysis) -> str:
             f"{me.position}-е место при {places} платных, договора нет.\n"
             "На платное зачисляют по договору и оплате."
         )
-    if me.highest_passageway_priority and hpp_place <= places:
+
+    if me.highest_passageway_priority:
+        if hpp_place <= places:
+            if me.is_send_agreement:
+                return (
+                    f"Вас зачислят на эту программу.\n"
+                    f"Реальное место по ВПП: {hpp_place}-е из {places} бюджетных."
+                )
+            return (
+                "ИТМО ставит вас в проходные по ВПП, но согласия пока нет.\n"
+                "Без согласия сюда не зачислят."
+            )
         return (
-            f"Вас зачислят на эту программу.\n"
-            f"Согласие уже есть, и вы в пределах мест: {hpp_place}-й "
-            f"из {places} бюджетных."
+            f"Согласие есть, но по ВПП вы за чертой: {hpp_place}-е место "
+            f"при {places} бюджетных."
         )
-    if me.highest_passageway_priority and hpp_place > places:
-        return (
-            f"Согласие на эту программу есть, но вы пока за чертой.\n"
-            f"Реальное место {hpp_place} при {places} бюджетных."
-        )
-    if me.main_top_priority and not me.is_send_agreement:
-        return (
-            "Сейчас вы проходите на эту программу — это ваш лучший вариант, куда хватает баллов.\n"
-            "Согласия ещё нет. Без него место не закрепят: зачислят только после согласия."
-        )
+
     if me.main_top_priority:
+        if not me.is_send_agreement:
+            return (
+                "По ОВП сюда проходите — это ваш лучший вариант по баллам.\n"
+                "Согласия ещё нет: без него место не закрепят."
+            )
         return (
-            "Сюда вы проходите, но ИТМО пока не ставит вас в зачисление на эту программу."
+            "По ОВП сюда проходите, согласие есть.\n"
+            "Зачисление оформят по ВПП после пересчёта списка."
         )
+
+    if status in ("pass_another", "in_another_order"):
+        return (
+            "ИТМО ведёт вас на другую программу с более высоким приоритетом.\n"
+            "На эту сейчас не зачислят."
+        )
+
+    if status in ("recommended", "in_order") and me.is_send_agreement:
+        return (
+            "ИТМО рекомендует вас сюда, согласие есть.\n"
+            "Если в списке ещё нет ВПП — ориентируйтесь на статус recommended."
+        )
+
+    if status == "recommended":
+        return (
+            "ИТМО считает, что вы сюда проходите, но согласия нет.\n"
+            "Без согласия к сроку место не закрепят."
+        )
+
+    if status == "in_order":
+        return "Вы в приказе на зачисление на эту программу."
+
+    if me.is_send_agreement and hpp_place <= places:
+        return (
+            f"Согласие есть, впереди с ВПП {analysis.hpp_ahead} чел. — это меньше {places} мест.\n"
+            "Но у вас нет ВПП на эту программу: ИТМО пока не ведёт зачисление сюда."
+        )
+
+    if me.priority and me.priority > 1:
+        return (
+            f"Эта программа у вас {me.priority}-й приоритет, ОВП/ВПП здесь нет.\n"
+            "Сюда могут зачислить только если не пройдёте на программы выше."
+        )
+
     return (
-        "Сейчас вас сюда не зачислят.\n"
-        "Либо вы проходите на другую программу выше по приоритету, либо пока никуда не проходите."
+        "Сюда сейчас не проходите по пометкам ИТМО.\n"
+        "Нет ОВП, ВПП и рекомендации на эту программу."
     )
 
 
@@ -199,9 +241,14 @@ def format_summary(analysis: Analysis, code: str, program_name: str) -> str:
             f"ваш приоритет  ·  <b>{_esc(prio)}</b>    среди 1 приоритета здесь {len(analysis.prio1)}"
         )
     if not paid and analysis.hpp_place is not None:
-        places_block.append(
-            f"реальное по ВПП  ·  <b>{analysis.hpp_place}</b> из {places}"
-        )
+        if me.highest_passageway_priority:
+            places_block.append(
+                f"реальное по ВПП  ·  <b>{analysis.hpp_place}</b> из {places}"
+            )
+        else:
+            places_block.append(
+                f"очередь с ВПП впереди  ·  <b>{analysis.hpp_place}</b> из {places}"
+            )
     elif paid and analysis.agreement_place is not None:
         places_block.append(
             f"среди договоров  ·  <b>{analysis.agreement_place}</b>"
@@ -248,10 +295,16 @@ def format_summary(analysis: Analysis, code: str, program_name: str) -> str:
             ),
         ]
         if not paid:
-            contest_block.append(
-                f"с ВПП  ·  {analysis.hpp_ahead}"
-                f"  →  реальное <b>{analysis.hpp_place}</b>-е из {places}"
-            )
+            if me.highest_passageway_priority:
+                contest_block.append(
+                    f"с ВПП  ·  {analysis.hpp_ahead}"
+                    f"  →  реальное <b>{analysis.hpp_place}</b>-е из {places}"
+                )
+            else:
+                contest_block.append(
+                    f"с ВПП впереди  ·  {analysis.hpp_ahead}"
+                    f"  →  очередь <b>{analysis.hpp_place}</b>-я из {places}"
+                )
         contest_block += [
             "",
             "📌 <b>На программе сейчас</b>",
@@ -396,7 +449,8 @@ def format_faq(topic: str | None = None) -> str:
                 "",
                 "<b>Среди 1 приоритета</b> — только те, у кого эта программа стоит первой. На зачисление это не влияет.",
                 "",
-                "<b>Реальное по ВПП</b> — сколько людей впереди уже с согласием и высшим проходным приоритетом здесь. Если это число не больше числа мест — таких людей зачислят.",
+                "<b>Реальное по ВПП</b> — ваше место среди людей с ВПП на этой программе. "
+                "Если ВПП у вас нет, смотрите строку «очередь с ВПП впереди» — это не ваше место зачисления.",
                 "",
                 "<b>Цитата внизу</b> — простой вывод: проходите ли вы сюда сейчас и нужно ли согласие.",
                 "",

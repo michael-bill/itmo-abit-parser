@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
@@ -20,6 +20,8 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
+    TelegramObject,
+    User,
 )
 
 from .analyzer import analyze
@@ -47,6 +49,22 @@ class EnterCode(StatesGroup):
 
 class BrowseCatalog(StatesGroup):
     searching = State()
+
+
+class UserSyncMiddleware(BaseMiddleware):
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user: User | None = getattr(event, "from_user", None)
+        if user is not None:
+            self._db.sync_username(user.id, user.username)
+        return await handler(event, data)
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -316,7 +334,7 @@ async def on_code_entered(message: Message, state: FSMContext, db: Database, cfg
     if not code:
         await message.answer("Код должен состоять из 5–12 цифр. Пример: 2053628")
         return
-    db.upsert_code(message.from_user.id, code)
+    db.upsert_code(message.from_user.id, code, username=message.from_user.username)
     await state.clear()
     await message.answer(f"Сохранил код <code>{code}</code>.", reply_markup=main_keyboard())
     await show_programs(message, cfg, code)
@@ -326,7 +344,7 @@ async def on_code_entered(message: Message, state: FSMContext, db: Database, cfg
 async def on_other_text(message: Message, state: FSMContext, db: Database, cfg: AppConfig) -> None:
     maybe_code = normalize_code(message.text or "")
     if maybe_code:
-        db.upsert_code(message.from_user.id, maybe_code)
+        db.upsert_code(message.from_user.id, maybe_code, username=message.from_user.username)
         await state.clear()
         await message.answer(f"Сохранил код <code>{maybe_code}</code>.", reply_markup=main_keyboard())
         await show_programs(message, cfg, maybe_code)
@@ -515,6 +533,9 @@ async def run_bot() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
+    user_sync = UserSyncMiddleware(db)
+    router.message.middleware(user_sync)
+    router.callback_query.middleware(user_sync)
     dp.include_router(router)
     try:
         try:

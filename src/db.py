@@ -30,6 +30,14 @@ class Database:
                 )
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+            if "username" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+
+    @staticmethod
+    def _normalize_username(username: str | None) -> str | None:
+        cleaned = (username or "").strip().lstrip("@")
+        return cleaned or None
 
     def get_code(self, telegram_id: int) -> str | None:
         with self._connect() as conn:
@@ -39,16 +47,31 @@ class Database:
             ).fetchone()
         return str(row["applicant_code"]) if row else None
 
-    def upsert_code(self, telegram_id: int, code: str) -> None:
+    def sync_username(self, telegram_id: int, username: str | None) -> None:
+        normalized = self._normalize_username(username)
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO users (telegram_id, applicant_code, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                UPDATE users
+                SET username = ?, updated_at = ?
+                WHERE telegram_id = ?
+                """,
+                (normalized, now, telegram_id),
+            )
+
+    def upsert_code(self, telegram_id: int, code: str, *, username: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        normalized_username = self._normalize_username(username)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO users (telegram_id, applicant_code, username, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(telegram_id) DO UPDATE SET
                     applicant_code = excluded.applicant_code,
+                    username = COALESCE(excluded.username, users.username),
                     updated_at = excluded.updated_at
                 """,
-                (telegram_id, code, now, now),
+                (telegram_id, code, normalized_username, now, now),
             )
