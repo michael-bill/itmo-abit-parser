@@ -145,7 +145,8 @@ class RatingClient:
                 return cached[1]
 
         errors: list[str] = []
-        loaders = (self._load_abitlk, self._load_next_data) if force else (self._load_next_data, self._load_abitlk)
+        # Next.js сейчас отдаёт актуальные списки; abitlk часто возвращает пустые items.
+        loaders = (self._load_next_data, self._load_abitlk)
         for loader in loaders:
             try:
                 rating = await loader(program, bust_cache=force)
@@ -196,7 +197,10 @@ class RatingClient:
         payload = data.get("result")
         if not isinstance(payload, dict):
             raise ValueError("В ответе API нет result")
-        return parse_program_list(payload, program.url, program.financing)
+        rating = parse_program_list(payload, program.url, program.financing)
+        if not rating.general and not rating.target_quota:
+            raise ValueError("API abitlk вернул пустой список абитуриентов")
+        return rating
 
     async def fetch_catalog(self) -> tuple[ProgramConfig, ...]:
         response = await self._client.get(
