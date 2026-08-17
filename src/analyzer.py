@@ -3,7 +3,7 @@ from __future__ import annotations
 from .models import AheadStats, Analysis, Applicant, ProgramRating
 
 LIST_NEIGHBOR_WINDOW = 18
-RECOMMENDED_NEIGHBOR_WINDOW = 5
+RECOMMENDED_NEIGHBOR_WINDOW = 3
 
 
 def _find(applicants: tuple[Applicant, ...], code: str) -> Applicant | None:
