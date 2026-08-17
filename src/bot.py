@@ -135,11 +135,12 @@ def financing_keyboard(family: tuple[ProgramConfig, ...]) -> InlineKeyboardMarku
     )
 
 
-def program_actions(program: ProgramConfig, cfg: AppConfig) -> InlineKeyboardMarkup:
+def program_actions(program: ProgramConfig, cfg: AppConfig, *, view: str = "summary") -> InlineKeyboardMarkup:
     ref = program.ref
     family = cfg.family_by_group_id(program.group_id)
     back_data = f"f:{program.group_id}" if len(family) > 1 else "programs"
     back_text = "« К выбору списка" if len(family) > 1 else "« К программам"
+    faq_data = _faq_cb("o", financing=program.financing, group_id=program.group_id, view=view)
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -152,31 +153,114 @@ def program_actions(program: ProgramConfig, cfg: AppConfig) -> InlineKeyboardMar
             ],
             [
                 InlineKeyboardButton(text=back_text, callback_data=back_data),
-                InlineKeyboardButton(text="❓ FAQ", callback_data="faq"),
+                InlineKeyboardButton(text="❓ FAQ", callback_data=faq_data),
             ],
         ]
     )
 
 
-def faq_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def _faq_back_suffix(financing: str, group_id: int, view: str) -> str:
+    return f":{financing}:{group_id}:{view}"
+
+
+def _faq_cb(
+    action: str,
+    topic: str | None = None,
+    *,
+    financing: str | None = None,
+    group_id: int | None = None,
+    view: str | None = None,
+) -> str:
+    parts = ["faq", action]
+    if topic:
+        parts.append(topic)
+    if financing is not None and group_id is not None and view is not None:
+        parts.extend([financing, str(group_id), view])
+    return ":".join(parts)
+
+
+def _parse_faq_back(parts: list[str], start: int) -> tuple[str, int, str] | None:
+    if len(parts) < start + 3:
+        return None
+    try:
+        return parts[start], int(parts[start + 1]), parts[start + 2]
+    except ValueError:
+        return None
+
+
+def _parse_faq_data(data: str) -> dict[str, Any]:
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "t":
+        return {
+            "action": "topic",
+            "topic": parts[2] if len(parts) > 2 else None,
+            "back": _parse_faq_back(parts, 3),
+        }
+    if action == "h":
+        return {"action": "home", "back": _parse_faq_back(parts, 2)}
+    if action == "b":
+        back = _parse_faq_back(parts, 2)
+        if back is None:
+            return {"action": "back"}
+        financing, group_id, view = back
+        return {
+            "action": "back",
+            "financing": financing,
+            "group_id": group_id,
+            "view": view,
+        }
+    if action == "o":
+        back = _parse_faq_back(parts, 2)
+        if back is None:
+            return {"action": "open"}
+        financing, group_id, view = back
+        return {
+            "action": "open",
+            "financing": financing,
+            "group_id": group_id,
+            "view": view,
+        }
+    return {"action": action}
+
+
+def faq_keyboard(
+    *,
+    topic: str | None = None,
+    back: tuple[str, int, str] | None = None,
+) -> InlineKeyboardMarkup:
+    suffix = _faq_back_suffix(*back) if back else ""
+
+    def topic_cb(name: str) -> str:
+        return f"faq:t:{name}{suffix}"
+
+    rows = [
+        [
+            InlineKeyboardButton(text="Бот", callback_data=topic_cb("bot")),
+            InlineKeyboardButton(text="Сводка", callback_data=topic_cb("summary")),
+        ],
+        [
+            InlineKeyboardButton(text="Бюджет", callback_data=topic_cb("budget")),
+            InlineKeyboardButton(text="Платное", callback_data=topic_cb("paid")),
+        ],
+        [
+            InlineKeyboardButton(text="Цвета", callback_data=topic_cb("colors")),
+            InlineKeyboardButton(text="Ранжирование", callback_data=topic_cb("rank")),
+        ],
+        [InlineKeyboardButton(text="Сроки 2026", callback_data=topic_cb("dates"))],
+    ]
+    if topic:
+        rows.append([InlineKeyboardButton(text="« К темам", callback_data=f"faq:h{suffix}")])
+    elif back:
+        rows.append(
             [
-                InlineKeyboardButton(text="Бот", callback_data="faq:bot"),
-                InlineKeyboardButton(text="Сводка", callback_data="faq:summary"),
-            ],
-            [
-                InlineKeyboardButton(text="Бюджет", callback_data="faq:budget"),
-                InlineKeyboardButton(text="Платное", callback_data="faq:paid"),
-            ],
-            [
-                InlineKeyboardButton(text="Цвета", callback_data="faq:colors"),
-                InlineKeyboardButton(text="Ранжирование", callback_data="faq:rank"),
-            ],
-            [InlineKeyboardButton(text="Сроки 2026", callback_data="faq:dates")],
-            [InlineKeyboardButton(text="« К темам", callback_data="faq:home")],
-        ]
-    )
+                InlineKeyboardButton(
+                    text="« Назад",
+                    callback_data=_faq_cb("b", financing=back[0], group_id=back[1], view=back[2]),
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _cfg(data: dict[str, Any]) -> AppConfig:
@@ -265,7 +349,7 @@ async def render_program(
         await _safe_edit(
             message,
             "Не удалось загрузить список ИТМО. Попробуйте обновить через минуту.",
-            program_actions(program, cfg),
+            program_actions(program, cfg, view=view),
         )
         return
 
@@ -276,7 +360,7 @@ async def render_program(
         text = format_list(analysis, code, first_priority=True)
     else:
         text = format_summary(analysis, code, program.name)
-    await _safe_edit(message, text, program_actions(program, cfg))
+    await _safe_edit(message, text, program_actions(program, cfg, view=view))
 
 
 @router.message(CommandStart())
@@ -363,26 +447,61 @@ async def on_other_text(message: Message, state: FSMContext, db: Database, cfg: 
     await message.answer("Выберите действие на клавиатуре или нажмите /faq.")
 
 
-@router.callback_query(F.data == "faq")
-async def cb_faq_open(callback: CallbackQuery) -> None:
-    await callback.answer()
-    if callback.message:
-        await callback.message.answer(
-            format_faq(),
-            reply_markup=faq_keyboard(),
-            disable_web_page_preview=True,
-        )
-
-
 @router.callback_query(F.data.regexp(r"^faq:"))
-async def cb_faq_topic(callback: CallbackQuery) -> None:
+async def cb_faq(
+    callback: CallbackQuery,
+    db: Database,
+    cfg: AppConfig,
+    client: RatingClient,
+) -> None:
     await callback.answer()
     if not callback.data or not callback.message:
         return
-    topic = callback.data.split(":", 1)[1]
-    if topic == "home":
-        topic = None
-    await _safe_edit(callback.message, format_faq(topic), faq_keyboard())
+
+    parsed = _parse_faq_data(callback.data)
+    action = parsed["action"]
+
+    if action == "back":
+        code = db.get_code(callback.from_user.id)
+        if not code:
+            await callback.answer("Сначала сохраните код", show_alert=True)
+            return
+        program = cfg.program_by_ref(parsed["financing"], parsed["group_id"])
+        if program is None:
+            await callback.answer("Программы больше нет в конфиге", show_alert=True)
+            return
+        await render_program(
+            message=callback.message,
+            program=program,
+            code=code,
+            client=client,
+            cfg=cfg,
+            view=parsed["view"],
+        )
+        return
+
+    if action == "open":
+        back = (parsed["financing"], parsed["group_id"], parsed["view"])
+        await _safe_edit(
+            callback.message,
+            format_faq(),
+            faq_keyboard(back=back),
+        )
+        return
+
+    back = parsed.get("back")
+    if action == "home":
+        await _safe_edit(callback.message, format_faq(), faq_keyboard(back=back))
+        return
+
+    if action == "topic":
+        topic = parsed.get("topic")
+        await _safe_edit(
+            callback.message,
+            format_faq(topic),
+            faq_keyboard(topic=topic, back=back),
+        )
+        return
 
 
 @router.callback_query(F.data == "cat:noop")

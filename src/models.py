@@ -96,3 +96,6 @@ class Analysis:
     hpp_total: int
     mtp_total: int
     mtp_without_consent: int
+    recommended_total: int
+    recommended_position: int | None
+    recommended_neighbors: tuple[Applicant, ...]

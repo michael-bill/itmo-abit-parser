@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from .models import AheadStats, Analysis, Applicant, ProgramRating
 
-NEIGHBOR_WINDOW = 5
+LIST_NEIGHBOR_WINDOW = 18
+RECOMMENDED_NEIGHBOR_WINDOW = 5
 
 
 def _find(applicants: tuple[Applicant, ...], code: str) -> Applicant | None:
@@ -30,7 +31,11 @@ def _ahead(people: tuple[Applicant, ...], me: Applicant, *, paid: bool) -> Ahead
     )
 
 
-def _slice_around(people: tuple[Applicant, ...], index: int, window: int = NEIGHBOR_WINDOW) -> tuple[Applicant, ...]:
+def _slice_around(
+    people: tuple[Applicant, ...],
+    index: int,
+    window: int = LIST_NEIGHBOR_WINDOW,
+) -> tuple[Applicant, ...]:
     start = max(0, index - window)
     end = min(len(people), index + window + 1)
     return people[start:end]
@@ -41,7 +46,9 @@ def analyze(rating: ProgramRating, code: str) -> Analysis:
     me = _find(everyone, code)
     prio1 = _prio1(rating.general)
     paid = rating.is_paid
-    recommended = tuple(person for person in everyone if person.status == "recommended")
+    recommended = tuple(
+        person for person in everyone if person.status in ("recommended", "in_order")
+    )
     hpp_total = sum(1 for person in everyone if person.highest_passageway_priority)
     mtp_people = [person for person in everyone if person.main_top_priority]
     mtp_total = len(mtp_people)
@@ -56,6 +63,8 @@ def analyze(rating: ProgramRating, code: str) -> Analysis:
     agreement_place = None
     hpp_place = None
     hpp_ahead = 0
+    recommended_position = None
+    recommended_neighbors: tuple[Applicant, ...] = ()
 
     if me is not None:
         ahead = _ahead(everyone, me, paid=paid)
@@ -81,7 +90,19 @@ def analyze(rating: ProgramRating, code: str) -> Analysis:
                     with_mtp=sum(1 for person in p1_before if person.main_top_priority),
                 )
         else:
-            neighbors_prio1 = prio1[: NEIGHBOR_WINDOW * 2 + 1]
+            neighbors_prio1 = prio1[: LIST_NEIGHBOR_WINDOW * 2 + 1]
+        if not paid and recommended:
+            rec_idx = next(
+                (i for i, person in enumerate(recommended) if person.sspvo_id == me.sspvo_id),
+                None,
+            )
+            if rec_idx is not None:
+                recommended_position = rec_idx + 1
+                recommended_neighbors = _slice_around(
+                    recommended, rec_idx, RECOMMENDED_NEIGHBOR_WINDOW
+                )
+            else:
+                recommended_neighbors = recommended[: RECOMMENDED_NEIGHBOR_WINDOW * 2 + 1]
 
     return Analysis(
         rating=rating,
@@ -101,4 +122,7 @@ def analyze(rating: ProgramRating, code: str) -> Analysis:
         hpp_total=hpp_total,
         mtp_total=mtp_total,
         mtp_without_consent=mtp_without_consent,
+        recommended_total=len(recommended),
+        recommended_position=recommended_position,
+        recommended_neighbors=recommended_neighbors,
     )
